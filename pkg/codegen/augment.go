@@ -105,7 +105,7 @@ func plural(name string) string {
 
 // pluralCapitalized returns the plural with capitalized first char.
 func pluralCapitalized(name string) string {
-	return name + "s"
+	return strutil.PluralCapitalized(name)
 }
 
 // writeNodeType writes the original node type definition with connection fields for relationships.
