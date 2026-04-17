@@ -8,51 +8,65 @@ import (
 	"github.com/vektah/gqlparser/v2/ast"
 )
 
-// buildNestedCreateOps builds CALL subqueries for nested create and connect operations
-// within the input value. Scans input children for relationship field names, then generates
-// the appropriate Cypher for each nested operation type.
+// buildNestedCreateOps builds CALL subqueries for nested create and connect
+// operations on a createXxx mutation.
+//
+// `connect` is emitted as a schema-driven TEMPLATE — one CALL block per
+// declared relationship field, reading the per-item connect list out of the
+// runtime `item` map via `UNWIND coalesce(item.<field>.connect, []) AS conn`.
+// This works uniformly for literal-AST inputs and for inputs passed as
+// GraphQL variables (the AST-walker approach fails for variable inputs
+// because `inputVal.Children` is empty at translate time).
+//
+// `create` still uses the AST walker because a nested-create target can
+// have its own nested relationships, and the target-node field shapes
+// only materialise in the AST.
 func (t *Translator) buildNestedCreateOps(inputVal *ast.Value, parentVar string, rels []schema.RelationshipDefinition, parentNode schema.NodeDefinition, scope *paramScope) string {
-	if inputVal == nil || len(inputVal.Children) == 0 {
-		return ""
-	}
-
-	// For list inputs, process the first item to find nested op structure
-	// (all items in the list share the same structure)
-	var items []*ast.Value
-	if inputVal.Kind == ast.ListValue {
-		for _, child := range inputVal.Children {
-			items = append(items, child.Value)
-		}
-	} else {
-		items = []*ast.Value{inputVal}
-	}
-
 	var nestedBlocks []string
 
-	for _, item := range items {
-		if item == nil || len(item.Children) == 0 {
+	// (1) Template-based connect: always emitted, covers every relationship
+	// field declared ON THIS NODE'S CreateInput. `rels` from
+	// RelationshipsForNode includes rels where the node is on either end;
+	// we only want the ones whose FieldName actually exists on this node's
+	// input type (i.e. FromNode == parentNode.Name). Without this filter
+	// we'd also template sibling-node fields (e.g. Verse's create query
+	// would emit blocks for VerseGroup's `verses` or Chapter's `verses`,
+	// which share the same field name and would fire spuriously if the
+	// caller happened to populate a similarly-named field).
+	for _, rel := range rels {
+		if rel.FromNode != parentNode.Name {
 			continue
 		}
-		for _, child := range item.Children {
-			// Check if this child name matches a relationship field
-			for _, rel := range rels {
-				if child.Name != rel.FieldName {
-					continue
-				}
-				// This is a relationship field with nested ops
-				if child.Value == nil {
-					continue
-				}
-				for _, opChild := range child.Value.Children {
-					switch opChild.Name {
-					case "create":
-						block := t.buildNestedCreate(parentVar, rel, opChild.Value, scope)
-						if block != "" {
-							nestedBlocks = append(nestedBlocks, block)
+		if block := t.buildRuntimeNestedConnect(parentVar, rel); block != "" {
+			nestedBlocks = append(nestedBlocks, block)
+		}
+	}
+
+	// (2) AST-based create: only runs when the input is inline literal
+	// AST (rare — most callers pass variables).
+	if inputVal != nil && len(inputVal.Children) > 0 {
+		var items []*ast.Value
+		if inputVal.Kind == ast.ListValue {
+			for _, child := range inputVal.Children {
+				items = append(items, child.Value)
+			}
+		} else {
+			items = []*ast.Value{inputVal}
+		}
+		for _, item := range items {
+			if item == nil || len(item.Children) == 0 {
+				continue
+			}
+			for _, child := range item.Children {
+				for _, rel := range rels {
+					if child.Name != rel.FieldName || child.Value == nil {
+						continue
+					}
+					for _, opChild := range child.Value.Children {
+						if opChild.Name != "create" {
+							continue
 						}
-					case "connect":
-						block := t.buildNestedConnect(parentVar, rel, opChild.Value, scope)
-						if block != "" {
+						if block := t.buildNestedCreate(parentVar, rel, opChild.Value, scope); block != "" {
 							nestedBlocks = append(nestedBlocks, block)
 						}
 					}
@@ -62,6 +76,41 @@ func (t *Translator) buildNestedCreateOps(inputVal *ast.Value, parentVar string,
 	}
 
 	return strings.Join(nestedBlocks, " ")
+}
+
+// buildRuntimeNestedConnect emits a FOREACH that reads the
+// `item.<field>.connect` list at runtime and MERGEs one relationship per
+// connect entry. Runs inside the parent-create body's UNWIND so
+// `<parentVar>` and `item` are both in scope.
+//
+// FOREACH (not a CALL subquery) is required here because FalkorDB's CALL
+// subqueries don't iterate with the outer UNWIND — they see the union of
+// incoming rows and fire once. FOREACH iterates naturally with the outer
+// row, which is what we need for per-item connect.
+//
+// Caveat: `MERGE (target:Label {id: ...})` creates a stub node if the
+// target doesn't already exist. In our use cases, parents are always
+// created before children in the same phase, so the MERGE always matches.
+// If a caller references a non-existent target, a bare node is materialized
+// — same ergonomic tradeoff that Neo4j's OGM tools generally accept for
+// bulk create + connect mutations.
+func (t *Translator) buildRuntimeNestedConnect(parentVar string, rel schema.RelationshipDefinition) string {
+	targetNode, ok := t.model.NodeByName(rel.ToNode)
+	if !ok {
+		targetNode = schema.NodeDefinition{Name: rel.ToNode, Labels: []string{rel.ToNode}}
+	}
+	idField := "id"
+	for _, f := range targetNode.Fields {
+		if f.IsID {
+			idField = f.Name
+			break
+		}
+	}
+	mergePattern := buildRelPattern(parentVar, "", rel.RelType, "target", rel.Direction)
+	return fmt.Sprintf(
+		`FOREACH (conn IN coalesce(item.%s.connect, []) | MERGE (target:%s {%s: conn.where.%s}) MERGE %s)`,
+		rel.FieldName, targetNode.Labels[0], idField, idField, mergePattern,
+	)
 }
 
 // buildNestedCreate generates a CALL subquery for nested CREATE operations.

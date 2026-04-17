@@ -34,12 +34,15 @@ func TestChunkParams_ListWithinBatchSize_SingleChunk(t *testing.T) {
 	}
 }
 
-// Test: List param exceeds batchSize — splits into ceil(len/batchSize) chunks.
+// Test: Record list exceeding batchSize splits into ceil(len/batchSize) chunks.
 // Expected: 100 items / 50 batchSize = 2 chunks.
+//
+// Record-typed element matters because chunkParams only chunks lists of
+// maps (GraphQL input shape) — not lists of scalars (e.g. a vector param).
 func TestChunkParams_ListExceedsBatchSize_SplitsIntoChunks(t *testing.T) {
 	items := make([]any, 100)
 	for i := range items {
-		items[i] = i
+		items[i] = map[string]any{"v": i}
 	}
 	params := map[string]any{"p0": items}
 	chunks := chunkParams(params, 50)
@@ -55,8 +58,8 @@ func TestChunkParams_ListExceedsBatchSize_SplitsIntoChunks(t *testing.T) {
 	if len(p0c0) != 50 {
 		t.Errorf("chunk 0 p0 should have 50 items, got %d", len(p0c0))
 	}
-	if p0c0[0] != 0 || p0c0[49] != 49 {
-		t.Errorf("chunk 0 items should be 0..49")
+	if p0c0[0].(map[string]any)["v"] != 0 || p0c0[49].(map[string]any)["v"] != 49 {
+		t.Errorf("chunk 0 items should wrap 0..49")
 	}
 
 	// Chunk 1: items[50:100]
@@ -67,8 +70,27 @@ func TestChunkParams_ListExceedsBatchSize_SplitsIntoChunks(t *testing.T) {
 	if len(p0c1) != 50 {
 		t.Errorf("chunk 1 p0 should have 50 items, got %d", len(p0c1))
 	}
-	if p0c1[0] != 50 || p0c1[49] != 99 {
-		t.Errorf("chunk 1 items should be 50..99")
+	if p0c1[0].(map[string]any)["v"] != 50 || p0c1[49].(map[string]any)["v"] != 99 {
+		t.Errorf("chunk 1 items should wrap 50..99")
+	}
+}
+
+// Test: Scalar-list param (e.g. a 1024-dim vector) is NOT chunked even
+// when it exceeds batchSize. Pins the narrowed chunking rule introduced to
+// protect vector mutations from being split mid-vector.
+func TestChunkParams_ScalarList_NotChunked(t *testing.T) {
+	items := make([]any, 1024)
+	for i := range items {
+		items[i] = float64(i) * 0.001
+	}
+	params := map[string]any{"vec": items}
+	chunks := chunkParams(params, 500)
+	if len(chunks) != 1 {
+		t.Fatalf("expected scalar list to pass through as 1 chunk, got %d", len(chunks))
+	}
+	got, _ := chunks[0]["vec"].([]any)
+	if len(got) != 1024 {
+		t.Errorf("scalar-list vec should be preserved whole (1024 items), got %d", len(got))
 	}
 }
 
@@ -77,7 +99,7 @@ func TestChunkParams_ListExceedsBatchSize_SplitsIntoChunks(t *testing.T) {
 func TestChunkParams_NonEvenSplit_LastChunkHasRemainder(t *testing.T) {
 	items := make([]any, 75)
 	for i := range items {
-		items[i] = i
+		items[i] = map[string]any{"v": i}
 	}
 	params := map[string]any{"p0": items}
 	chunks := chunkParams(params, 50)
@@ -100,7 +122,7 @@ func TestChunkParams_NonEvenSplit_LastChunkHasRemainder(t *testing.T) {
 func TestChunkParams_NonListParams_CopiedToAllChunks(t *testing.T) {
 	items := make([]any, 100)
 	for i := range items {
-		items[i] = i
+		items[i] = map[string]any{"v": i}
 	}
 	params := map[string]any{"p0": items, "where": "title = $x"}
 	chunks := chunkParams(params, 50)
@@ -125,11 +147,11 @@ func TestChunkParams_NonListParams_CopiedToAllChunks(t *testing.T) {
 func TestChunkParams_MultipleListParams_AlignedOnLongest(t *testing.T) {
 	long := make([]any, 100)
 	for i := range long {
-		long[i] = i
+		long[i] = map[string]any{"v": i}
 	}
 	short := make([]any, 30)
 	for i := range short {
-		short[i] = i + 1000
+		short[i] = map[string]any{"v": i + 1000}
 	}
 	params := map[string]any{"p0": long, "p1": short}
 	chunks := chunkParams(params, 50)
@@ -188,7 +210,11 @@ func TestChunkParams_NilParams_SingleChunk(t *testing.T) {
 // Test: batchSize of 1 — every item is its own chunk.
 // Expected: 3 items / batchSize 1 = 3 chunks.
 func TestChunkParams_BatchSizeOne_EachItemOwnChunk(t *testing.T) {
-	params := map[string]any{"p0": []any{"a", "b", "c"}}
+	params := map[string]any{"p0": []any{
+		map[string]any{"v": "a"},
+		map[string]any{"v": "b"},
+		map[string]any{"v": "c"},
+	}}
 	chunks := chunkParams(params, 1)
 	if len(chunks) != 3 {
 		t.Fatalf("expected 3 chunks for 3 items with batchSize 1, got %d", len(chunks))

@@ -23,23 +23,46 @@ func buildChunkPlan(plan translate.TranslationPlan, params map[string]any) trans
 	return cp
 }
 
+// isRecordList returns true when list's elements look like GraphQL input
+// records — i.e., maps keyed by field name. Used by chunkParams to decide
+// whether a list is eligible for batch-sized splitting.
+func isRecordList(list []any) bool {
+	if len(list) == 0 {
+		return false
+	}
+	_, ok := list[0].(map[string]any)
+	return ok
+}
+
 // chunkParams inspects the params map for []any values exceeding batchSize.
 // Returns a slice of param maps — one per chunk.
 // If no list exceeds batchSize, returns a single-element slice (the original params).
+//
+// Only lists of *records* (map[string]any elements) are eligible for
+// chunking — these correspond to the `input: [XxxInput!]!` argument of a
+// bulk mutation, where splitting by batchSize is the intent. Lists of
+// scalars (e.g. a 1024-dim []any{float64, float64, ...} vector parameter)
+// are passed through whole; chunking those would rewrite the mutation to
+// run multiple times with partial vectors — wrong by construction.
 func chunkParams(params map[string]any, batchSize int) []map[string]any {
 	if params == nil {
 		return []map[string]any{params}
 	}
 
-	// Find the longest []any value
+	// Find the longest chunkable []any value
 	maxLen := 0
 	listKeys := map[string][]any{}
 	for k, v := range params {
-		if list, ok := v.([]any); ok {
-			listKeys[k] = list
-			if len(list) > maxLen {
-				maxLen = len(list)
-			}
+		list, ok := v.([]any)
+		if !ok {
+			continue
+		}
+		if !isRecordList(list) {
+			continue
+		}
+		listKeys[k] = list
+		if len(list) > maxLen {
+			maxLen = len(list)
 		}
 	}
 

@@ -118,11 +118,14 @@ func (t *Translator) translateCreateField(field *ast.Field, scope *paramScope) (
 	// Find the "movies" (or equivalent) response field for projection
 	projSelSet := findResponseSelectionSet(field.SelectionSet)
 
-	// Build SET clauses from node fields
+	// Build SET clauses from node fields. ID fields honor a caller-supplied
+	// `item.id` when present and fall back to `randomUUID()` when absent —
+	// this lets callers use deterministic identifiers (e.g. "v/ot/gen/1/5")
+	// without losing the auto-UUID default for callers that don't care.
 	var setParts []string
 	for _, f := range node.Fields {
 		if f.IsID {
-			setParts = append(setParts, fmt.Sprintf("n.%s = randomUUID()", f.Name))
+			setParts = append(setParts, fmt.Sprintf("n.%s = coalesce(item.%s, randomUUID())", f.Name, f.Name))
 		} else {
 			setParts = append(setParts, fmt.Sprintf("n.%s = item.%s", f.Name, f.Name))
 		}
@@ -191,7 +194,17 @@ func (t *Translator) translateUpdateField(field *ast.Field, scope *paramScope) (
 			}
 			if !isRelField {
 				param := scope.add(resolveValue(child.Value, scope.variables))
-				setParts = append(setParts, fmt.Sprintf("n.%s = %s", child.Name, param))
+				// For @vector fields, wrap the param in vecf32(...) so the
+				// stored property becomes a VectorF32 and the FalkorDB
+				// vector index picks it up. Without the wrap, the value is
+				// stored as a plain LIST<FLOAT> and never enters the index,
+				// leaving kNN unable to find the node. This is the
+				// update-path counterpart to the create-path SET emission.
+				expr := param
+				if node.VectorField != nil && child.Name == node.VectorField.Name {
+					expr = fmt.Sprintf("vecf32(%s)", param)
+				}
+				setParts = append(setParts, fmt.Sprintf("n.%s = %s", child.Name, expr))
 			}
 		}
 	}

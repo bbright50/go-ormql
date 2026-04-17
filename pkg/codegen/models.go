@@ -206,13 +206,14 @@ func modelsWriteNodeStruct(sb *strings.Builder, node schema.NodeDefinition, rels
 }
 
 // modelsWriteCreateInput writes a CreateInput struct for a node.
+// ID fields are emitted as OPTIONAL (pointer/omitempty) so callers can
+// pass a deterministic identifier; the translator falls back to
+// randomUUID() when the caller omits it.
 func modelsWriteCreateInput(sb *strings.Builder, node schema.NodeDefinition, customScalars map[string]bool) {
 	sb.WriteString(fmt.Sprintf("type %sCreateInput struct {\n", node.Name))
 	for _, f := range node.Fields {
-		if f.IsID {
-			continue // IDs are auto-generated
-		}
-		modelsWriteField(sb, f, false, customScalars)
+		optional := f.IsID
+		modelsWriteField(sb, f, optional, customScalars)
 	}
 	sb.WriteString("}\n\n")
 }

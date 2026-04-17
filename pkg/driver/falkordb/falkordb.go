@@ -291,8 +291,11 @@ func rewriteVectorQuery(query string, params map[string]any, indexes map[string]
 	newParams["rw2"] = params[kParam]
 	newParams["rw3"] = toInterfaceSlice(params[vectorParam])
 
-	// Rewrite the query
-	newCallArgs := "$rw0, $rw1, $rw2, $rw3"
+	// Rewrite the query. FalkorDB's db.idx.vector.queryNodes expects its
+	// 4th argument to be a VectorF32, not a plain LIST<FLOAT>; wrap the
+	// vector param in vecf32(...) so the procedure accepts it. FalkorDB
+	// 4.18+ strictly rejects the unwrapped form.
+	newCallArgs := "$rw0, $rw1, $rw2, vecf32($rw3)"
 	rewritten := query[:idx] + falkorDBVectorProc + newCallArgs + query[argEnd:]
 
 	return rewritten, newParams

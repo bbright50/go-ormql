@@ -210,8 +210,24 @@ func TestTranslateCreateField_NestedConnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "MERGE") || !strings.Contains(result, "MATCH") {
-		t.Errorf("expected MATCH + MERGE in nested connect, got %q", result)
+	// The schema-driven FOREACH+MERGE template emits:
+	//   FOREACH (conn IN coalesce(item.actors.connect, []) |
+	//     MERGE (target:Actor {id: conn.where.id})
+	//     MERGE (n)<-[:ACTED_IN]-(target))
+	// which covers the semantics we care about: pull the connect list off
+	// the current item, resolve/MERGE the target node by id, and MERGE the
+	// relationship between parent and target.
+	wantFragments := []string{
+		"FOREACH",
+		"item.actors.connect",
+		":Actor",
+		":ACTED_IN",
+		"MERGE",
+	}
+	for _, frag := range wantFragments {
+		if !strings.Contains(result, frag) {
+			t.Errorf("nested connect output missing %q; got %q", frag, result)
+		}
 	}
 }
 

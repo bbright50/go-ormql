@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tab58/go-ormql/pkg/internal/strutil"
 	"github.com/tab58/go-ormql/pkg/schema"
 	"github.com/vektah/gqlparser/v2/ast"
 )
@@ -214,14 +215,17 @@ func normalizeVector(v any) any {
 }
 
 // findNodeByPluralName looks up a node definition by its plural field name.
-// e.g., "movies" → Movie node, "actors" → Actor node.
+// e.g., "movies" → Movie node, "actors" → Actor node,
+// "topicalGuideEntries" → TopicalGuideEntry node. Uses the same
+// go-pluralize client as the code generator (see strutil.PluralLower)
+// so irregular plurals (Entry→Entries, Story→Stories, etc.) resolve
+// correctly.
 func (t *Translator) findNodeByPluralName(pluralName string) (schema.NodeDefinition, bool) {
 	for _, n := range t.model.Nodes {
 		if len(n.Name) == 0 {
 			continue
 		}
-		plural := strings.ToLower(n.Name[:1]) + n.Name[1:] + "s"
-		if plural == pluralName {
+		if strutil.PluralLower(n.Name) == pluralName {
 			return n, true
 		}
 	}

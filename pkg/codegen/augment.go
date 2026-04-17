@@ -242,13 +242,18 @@ func writeSortInput(b *strings.Builder, node schema.NodeDefinition) {
 
 // writeCreateInput writes the create input type.
 // Non-nullable fields stay required, nullable fields stay optional.
-// Relationship fields reference their FieldInput types.
+// ID fields are emitted as OPTIONAL so callers can pass a deterministic
+// identifier; the translator falls back to randomUUID() when the caller
+// omits it. Relationship fields reference their FieldInput types.
 func writeCreateInput(b *strings.Builder, node schema.NodeDefinition, rels []schema.RelationshipDefinition) {
 	fmt.Fprintf(b, "input %sCreateInput {\n", node.Name)
 	hasNonID := false
 	for _, f := range node.Fields {
 		if f.IsID {
-			continue // ID is auto-generated, not in create input
+			// Emit as optional — stripNonNull so the SDL becomes `id: ID`
+			// rather than the schema's `id: ID!`.
+			fmt.Fprintf(b, "  %s: %s\n", f.Name, stripNonNull(f.GraphQLType))
+			continue
 		}
 		hasNonID = true
 		fmt.Fprintf(b, "  %s: %s\n", f.Name, f.GraphQLType)
