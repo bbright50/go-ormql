@@ -209,9 +209,18 @@ func writeWhereInput(b *strings.Builder, node schema.NodeDefinition, rels []sche
 }
 
 // baseTypeName extracts the base type name from a GraphQL type (strips ! and []).
+// Handles every valid combination: `T`, `T!`, `[T]`, `[T!]`, `[T]!`, `[T!]!`.
+//
+// The previous implementation stripped `[` then `]` then a single trailing `!`,
+// which failed on `[T!]!`: after stripping the leading `[`, the string ended
+// in `!` (not `]`), so the `]` strip was a no-op and only the outer `!` came
+// off — leaving `T!]`. That propagated into `_in`/`_nin` predicates as
+// `[T!]!]`, invalid GraphQL.
 func baseTypeName(gqlType string) string {
-	s := strings.TrimPrefix(gqlType, "[")
-	s = strings.TrimSuffix(s, "]")
+	s := strings.TrimSuffix(gqlType, "!")
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		s = s[1 : len(s)-1]
+	}
 	s = strings.TrimSuffix(s, "!")
 	return s
 }

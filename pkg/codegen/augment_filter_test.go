@@ -121,6 +121,44 @@ func TestAugmentSchema_WhereInput_ListOperators(t *testing.T) {
 	}
 }
 
+// TestAugmentSchema_WhereInput_ListOfScalarField pins that a list-of-scalar
+// field like `tags: [String!]!` produces syntactically-valid `_in`/`_nin`
+// predicates. Before this test, baseTypeName left a trailing `]` on
+// `[String!]!`, so the augmented schema emitted `tags_in: [String!]!]` —
+// invalid GraphQL that broke schema parsing at runtime.
+func TestAugmentSchema_WhereInput_ListOfScalarField(t *testing.T) {
+	model := schema.GraphModel{
+		Nodes: []schema.NodeDefinition{
+			{
+				Name:   "Doc",
+				Labels: []string{"Doc"},
+				Fields: []schema.FieldDefinition{
+					{Name: "id", GraphQLType: "ID!", GoType: "string", CypherType: "STRING", Nullable: false, IsID: true},
+					{Name: "tags", GraphQLType: "[String!]!", GoType: "[]string", CypherType: "STRING", Nullable: false},
+				},
+			},
+		},
+	}
+	sdl, err := AugmentSchema(model)
+	if err != nil {
+		t.Fatalf("AugmentSchema returned error: %v", err)
+	}
+
+	// The bug emitted "tags_in: [String!]!]" — note the extra `]`.
+	if strings.Contains(sdl, "tags_in: [String!]!]") || strings.Contains(sdl, "tags_nin: [String!]!]") {
+		t.Errorf("DocWhere has malformed _in/_nin predicate ending in '!]':\n%s", sdl)
+	}
+	// The correct predicate strips the outer list wrapper and non-null
+	// markers down to the scalar, then re-wraps as a nullable list:
+	// `tags_in: [String!]`.
+	if !strings.Contains(sdl, "tags_in: [String!]") {
+		t.Errorf("DocWhere missing well-formed `tags_in: [String!]`:\n%s", sdl)
+	}
+	if !strings.Contains(sdl, "tags_nin: [String!]") {
+		t.Errorf("DocWhere missing well-formed `tags_nin: [String!]`:\n%s", sdl)
+	}
+}
+
 // TestAugmentSchema_WhereInput_NegationOperator verifies that all scalar fields
 // get _not (negation) operator field.
 func TestAugmentSchema_WhereInput_NegationOperator(t *testing.T) {
