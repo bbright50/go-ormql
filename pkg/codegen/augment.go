@@ -42,6 +42,12 @@ func AugmentSchema(model schema.GraphModel) (string, error) {
 		writeNodeType(&b, node, relsByNode[node.Name])
 	}
 
+	// seenConnTypes guards against duplicate Connection/Edge type declarations that
+	// arise when a relationship field name is the plural of the target node type
+	// (e.g. Hymn.stanzas → HymnStanzasConnection collides with the root
+	// HymnStanzasConnection emitted for the HymnStanza node itself).
+	seenConnTypes := map[string]bool{}
+
 	// Generate input types, response types, connection types, and similar result types per node.
 	for _, node := range model.Nodes {
 		rels := relationshipsForNode(model, node.Name)
@@ -54,7 +60,7 @@ func AugmentSchema(model schema.GraphModel) (string, error) {
 		writeMatchInput(&b, node)
 		writeMergeInput(&b, node)
 		writeMergeMutationResponse(&b, node)
-		writeConnectionTypes(&b, node)
+		writeConnectionTypes(&b, node, seenConnTypes)
 		if node.VectorField != nil {
 			writeSimilarResultType(&b, node)
 		}
@@ -68,7 +74,7 @@ func AugmentSchema(model schema.GraphModel) (string, error) {
 		writeDisconnectFieldInput(&b, rel)
 		writeDeleteFieldInput(&b, rel)
 		writeUpdateConnectionInput(&b, rel)
-		writeRelConnectionTypes(&b, rel)
+		writeRelConnectionTypes(&b, rel, seenConnTypes)
 		if rel.Properties != nil && !emittedProperties[rel.Properties.TypeName] {
 			writePropertiesCreateInput(&b, *rel.Properties)
 			writePropertiesUpdateInput(&b, *rel.Properties)
@@ -328,23 +334,32 @@ func writeMutationResponse(b *strings.Builder, node schema.NodeDefinition, verb 
 }
 
 // writeConnectionTypes writes Relay connection and edge types for a node.
-func writeConnectionTypes(b *strings.Builder, node schema.NodeDefinition) {
+// seen tracks already-emitted type names to prevent duplicate declarations.
+func writeConnectionTypes(b *strings.Builder, node schema.NodeDefinition, seen map[string]bool) {
 	pc := pluralCapitalized(node.Name)
+	connName := pc + "Connection"
+	edgeName := node.Name + "Edge"
 
-	// Connection type
-	fmt.Fprintf(b, "type %sConnection {\n", pc)
-	fmt.Fprintf(b, "  edges: [%sEdge!]!\n", node.Name)
-	fmt.Fprintln(b, "  pageInfo: PageInfo!")
-	fmt.Fprintln(b, "  totalCount: Int!")
-	fmt.Fprintln(b, "}")
-	fmt.Fprintln(b)
+	if !seen[connName] {
+		seen[connName] = true
+		// Connection type
+		fmt.Fprintf(b, "type %s {\n", connName)
+		fmt.Fprintf(b, "  edges: [%s!]!\n", edgeName)
+		fmt.Fprintln(b, "  pageInfo: PageInfo!")
+		fmt.Fprintln(b, "  totalCount: Int!")
+		fmt.Fprintln(b, "}")
+		fmt.Fprintln(b)
+	}
 
-	// Edge type
-	fmt.Fprintf(b, "type %sEdge {\n", node.Name)
-	fmt.Fprintf(b, "  node: %s!\n", node.Name)
-	fmt.Fprintln(b, "  cursor: String!")
-	fmt.Fprintln(b, "}")
-	fmt.Fprintln(b)
+	if !seen[edgeName] {
+		seen[edgeName] = true
+		// Edge type
+		fmt.Fprintf(b, "type %s {\n", edgeName)
+		fmt.Fprintf(b, "  node: %s!\n", node.Name)
+		fmt.Fprintln(b, "  cursor: String!")
+		fmt.Fprintln(b, "}")
+		fmt.Fprintln(b)
+	}
 }
 
 // writeSimilarResultType writes the {Node}SimilarResult type for vector similarity queries.

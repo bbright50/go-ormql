@@ -59,6 +59,11 @@ func GenerateModels(model schema.GraphModel, packageName string) ([]byte, error)
 	}
 
 	// Node types
+	// seenConnTypes guards against duplicate Connection/Edge struct names that
+	// arise when a relationship field name is the plural of the target node type
+	// (e.g. Hymn.stanzas → HymnStanzasConnection collides with the root
+	// HymnStanzasConnection emitted for the HymnStanza node itself).
+	seenConnTypes := make(map[string]bool)
 	for _, node := range model.Nodes {
 		rels := model.RelationshipsForNode(node.Name)
 		modelsWriteNodeStruct(&sb, node, rels, customScalars)
@@ -68,7 +73,7 @@ func GenerateModels(model schema.GraphModel, packageName string) ([]byte, error)
 		modelsWriteSortInput(&sb, node)
 
 		// Root connection types
-		modelsWriteConnectionTypes(&sb, node)
+		modelsWriteConnectionTypes(&sb, node, seenConnTypes)
 
 		// Mutation response types
 		modelsWriteMutationResponseTypes(&sb, node)
@@ -81,7 +86,7 @@ func GenerateModels(model schema.GraphModel, packageName string) ([]byte, error)
 		// Relationship-specific types
 		for _, rel := range rels {
 			if rel.FromNode == node.Name {
-				modelsWriteRelConnectionTypes(&sb, node, rel)
+				modelsWriteRelConnectionTypes(&sb, node, rel, seenConnTypes)
 				modelsWriteNestedMutationInputTypes(&sb, node, rel)
 			}
 		}
@@ -281,41 +286,58 @@ func modelsWriteSortInput(sb *strings.Builder, node schema.NodeDefinition) {
 }
 
 // modelsWriteConnectionTypes writes root connection types for a node.
-func modelsWriteConnectionTypes(sb *strings.Builder, node schema.NodeDefinition) {
+// seen tracks already-emitted Connection/Edge type names to prevent duplicate
+// declarations when a later relationship field generates the same name.
+func modelsWriteConnectionTypes(sb *strings.Builder, node schema.NodeDefinition, seen map[string]bool) {
 	plural := node.Name + "s"
+	connName := plural + "Connection"
+	edgeName := node.Name + "Edge"
 
-	// Connection
-	sb.WriteString(fmt.Sprintf("type %sConnection struct {\n", plural))
-	sb.WriteString(fmt.Sprintf("\tEdges      []*%sEdge `json:\"edges\"`\n", node.Name))
-	sb.WriteString("\tTotalCount int        `json:\"totalCount\"`\n")
-	sb.WriteString("\tPageInfo   PageInfo   `json:\"pageInfo\"`\n")
-	sb.WriteString("}\n\n")
+	if !seen[connName] {
+		seen[connName] = true
+		// Connection
+		sb.WriteString(fmt.Sprintf("type %s struct {\n", connName))
+		sb.WriteString(fmt.Sprintf("\tEdges      []*%s `json:\"edges\"`\n", edgeName))
+		sb.WriteString("\tTotalCount int        `json:\"totalCount\"`\n")
+		sb.WriteString("\tPageInfo   PageInfo   `json:\"pageInfo\"`\n")
+		sb.WriteString("}\n\n")
+	}
 
-	// Edge (root — no properties)
-	sb.WriteString(fmt.Sprintf("type %sEdge struct {\n", node.Name))
-	sb.WriteString(fmt.Sprintf("\tNode   *%s    `json:\"node\"`\n", node.Name))
-	sb.WriteString("\tCursor string `json:\"cursor\"`\n")
-	sb.WriteString("}\n\n")
+	if !seen[edgeName] {
+		seen[edgeName] = true
+		// Edge (root — no properties)
+		sb.WriteString(fmt.Sprintf("type %s struct {\n", edgeName))
+		sb.WriteString(fmt.Sprintf("\tNode   *%s    `json:\"node\"`\n", node.Name))
+		sb.WriteString("\tCursor string `json:\"cursor\"`\n")
+		sb.WriteString("}\n\n")
+	}
 }
 
 // modelsWriteRelConnectionTypes writes nested connection types for a relationship.
-func modelsWriteRelConnectionTypes(sb *strings.Builder, node schema.NodeDefinition, rel schema.RelationshipDefinition) {
+// seen tracks already-emitted type names; duplicate definitions are skipped.
+func modelsWriteRelConnectionTypes(sb *strings.Builder, node schema.NodeDefinition, rel schema.RelationshipDefinition, seen map[string]bool) {
 	connName := node.Name + strutil.Capitalize(rel.FieldName) + "Connection"
 	edgeName := node.Name + strutil.Capitalize(rel.FieldName) + "Edge"
 
-	sb.WriteString(fmt.Sprintf("type %s struct {\n", connName))
-	sb.WriteString(fmt.Sprintf("\tEdges      []*%s `json:\"edges\"`\n", edgeName))
-	sb.WriteString("\tTotalCount int         `json:\"totalCount\"`\n")
-	sb.WriteString("\tPageInfo   PageInfo    `json:\"pageInfo\"`\n")
-	sb.WriteString("}\n\n")
-
-	sb.WriteString(fmt.Sprintf("type %s struct {\n", edgeName))
-	sb.WriteString(fmt.Sprintf("\tNode   *%s    `json:\"node\"`\n", rel.ToNode))
-	sb.WriteString("\tCursor string `json:\"cursor\"`\n")
-	if rel.Properties != nil {
-		sb.WriteString(fmt.Sprintf("\tProperties *%s `json:\"properties,omitempty\"`\n", rel.Properties.TypeName))
+	if !seen[connName] {
+		seen[connName] = true
+		sb.WriteString(fmt.Sprintf("type %s struct {\n", connName))
+		sb.WriteString(fmt.Sprintf("\tEdges      []*%s `json:\"edges\"`\n", edgeName))
+		sb.WriteString("\tTotalCount int         `json:\"totalCount\"`\n")
+		sb.WriteString("\tPageInfo   PageInfo    `json:\"pageInfo\"`\n")
+		sb.WriteString("}\n\n")
 	}
-	sb.WriteString("}\n\n")
+
+	if !seen[edgeName] {
+		seen[edgeName] = true
+		sb.WriteString(fmt.Sprintf("type %s struct {\n", edgeName))
+		sb.WriteString(fmt.Sprintf("\tNode   *%s    `json:\"node\"`\n", rel.ToNode))
+		sb.WriteString("\tCursor string `json:\"cursor\"`\n")
+		if rel.Properties != nil {
+			sb.WriteString(fmt.Sprintf("\tProperties *%s `json:\"properties,omitempty\"`\n", rel.Properties.TypeName))
+		}
+		sb.WriteString("}\n\n")
+	}
 }
 
 // modelsWriteMutationResponseTypes writes Create/Update mutation response types.
