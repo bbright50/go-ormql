@@ -315,29 +315,35 @@ func modelsWriteConnectionTypes(sb *strings.Builder, node schema.NodeDefinition,
 
 // modelsWriteRelConnectionTypes writes nested connection types for a relationship.
 // seen tracks already-emitted type names; duplicate definitions are skipped.
+//
+// Connection and Edge are emitted as a pair: if the Connection name was
+// already claimed by an entity-level emission (modelsWriteConnectionTypes),
+// its Edges slice references a *different* Edge name (the singular {Node}Edge
+// form), so emitting this pass's Edge would leave it orphan with nothing
+// pointing at it. Skip both atomically.
 func modelsWriteRelConnectionTypes(sb *strings.Builder, node schema.NodeDefinition, rel schema.RelationshipDefinition, seen map[string]bool) {
 	connName := node.Name + strutil.Capitalize(rel.FieldName) + "Connection"
 	edgeName := node.Name + strutil.Capitalize(rel.FieldName) + "Edge"
 
-	if !seen[connName] {
-		seen[connName] = true
-		sb.WriteString(fmt.Sprintf("type %s struct {\n", connName))
-		sb.WriteString(fmt.Sprintf("\tEdges      []*%s `json:\"edges\"`\n", edgeName))
-		sb.WriteString("\tTotalCount int         `json:\"totalCount\"`\n")
-		sb.WriteString("\tPageInfo   PageInfo    `json:\"pageInfo\"`\n")
-		sb.WriteString("}\n\n")
+	if seen[connName] {
+		return
 	}
+	seen[connName] = true
+	seen[edgeName] = true
 
-	if !seen[edgeName] {
-		seen[edgeName] = true
-		sb.WriteString(fmt.Sprintf("type %s struct {\n", edgeName))
-		sb.WriteString(fmt.Sprintf("\tNode   *%s    `json:\"node\"`\n", rel.ToNode))
-		sb.WriteString("\tCursor string `json:\"cursor\"`\n")
-		if rel.Properties != nil {
-			sb.WriteString(fmt.Sprintf("\tProperties *%s `json:\"properties,omitempty\"`\n", rel.Properties.TypeName))
-		}
-		sb.WriteString("}\n\n")
+	sb.WriteString(fmt.Sprintf("type %s struct {\n", connName))
+	sb.WriteString(fmt.Sprintf("\tEdges      []*%s `json:\"edges\"`\n", edgeName))
+	sb.WriteString("\tTotalCount int         `json:\"totalCount\"`\n")
+	sb.WriteString("\tPageInfo   PageInfo    `json:\"pageInfo\"`\n")
+	sb.WriteString("}\n\n")
+
+	sb.WriteString(fmt.Sprintf("type %s struct {\n", edgeName))
+	sb.WriteString(fmt.Sprintf("\tNode   *%s    `json:\"node\"`\n", rel.ToNode))
+	sb.WriteString("\tCursor string `json:\"cursor\"`\n")
+	if rel.Properties != nil {
+		sb.WriteString(fmt.Sprintf("\tProperties *%s `json:\"properties,omitempty\"`\n", rel.Properties.TypeName))
 	}
+	sb.WriteString("}\n\n")
 }
 
 // modelsWriteMutationResponseTypes writes Create/Update mutation response types.

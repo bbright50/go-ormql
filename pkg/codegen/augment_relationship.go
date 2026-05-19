@@ -43,34 +43,40 @@ func writeNestedInputTypes(b *strings.Builder, rel schema.RelationshipDefinition
 // {Node}{FieldCap}Connection { edges, pageInfo, totalCount }
 // {Node}{FieldCap}Edge { node, cursor, properties? }
 // seen tracks already-emitted type names; duplicates are skipped.
+//
+// Connection and Edge are emitted as a pair: if the Connection name was
+// already claimed by an entity-level emission (writeConnectionTypes), its
+// edges field references a *different* Edge name (the singular {Node}Edge
+// form), so emitting this pass's Edge would leave it orphan with nothing
+// pointing at it. Skip both atomically.
 func writeRelConnectionTypes(b *strings.Builder, rel schema.RelationshipDefinition, seen map[string]bool) {
 	prefix := rel.FromNode + strutil.Capitalize(rel.FieldName)
 	connName := prefix + "Connection"
 	edgeName := prefix + "Edge"
 
-	if !seen[connName] {
-		seen[connName] = true
-		// Connection type
-		fmt.Fprintf(b, "type %s {\n", connName)
-		fmt.Fprintf(b, "  edges: [%s!]!\n", edgeName)
-		fmt.Fprintln(b, "  pageInfo: PageInfo!")
-		fmt.Fprintln(b, "  totalCount: Int!")
-		fmt.Fprintln(b, "}")
-		fmt.Fprintln(b)
+	if seen[connName] {
+		return
 	}
+	seen[connName] = true
+	seen[edgeName] = true
 
-	if !seen[edgeName] {
-		seen[edgeName] = true
-		// Edge type
-		fmt.Fprintf(b, "type %s {\n", edgeName)
-		fmt.Fprintf(b, "  node: %s!\n", rel.ToNode)
-		fmt.Fprintln(b, "  cursor: String!")
-		if rel.Properties != nil {
-			fmt.Fprintf(b, "  properties: %s\n", rel.Properties.TypeName)
-		}
-		fmt.Fprintln(b, "}")
-		fmt.Fprintln(b)
+	// Connection type
+	fmt.Fprintf(b, "type %s {\n", connName)
+	fmt.Fprintf(b, "  edges: [%s!]!\n", edgeName)
+	fmt.Fprintln(b, "  pageInfo: PageInfo!")
+	fmt.Fprintln(b, "  totalCount: Int!")
+	fmt.Fprintln(b, "}")
+	fmt.Fprintln(b)
+
+	// Edge type
+	fmt.Fprintf(b, "type %s {\n", edgeName)
+	fmt.Fprintf(b, "  node: %s!\n", rel.ToNode)
+	fmt.Fprintln(b, "  cursor: String!")
+	if rel.Properties != nil {
+		fmt.Fprintf(b, "  properties: %s\n", rel.Properties.TypeName)
 	}
+	fmt.Fprintln(b, "}")
+	fmt.Fprintln(b)
 }
 
 // writePropertiesType writes the output type for a @relationshipProperties type (for reading edge properties).
